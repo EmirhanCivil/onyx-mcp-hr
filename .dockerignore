@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+data/
+logs/
+.env
+.pytest_cache/
+.DS_Store
+generate_dummy_data.py
