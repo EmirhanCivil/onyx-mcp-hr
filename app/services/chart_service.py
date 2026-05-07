@@ -11,8 +11,55 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
+from matplotlib.colors import LinearSegmentedColormap
 
 from app.config import settings
+
+
+# Brand palette — HTML rapor ile aynı renkler
+_BRAND_PRIMARY = "#0F766E"
+_BRAND_PRIMARY_DARK = "#134E4A"
+_BRAND_ACCENT = "#F59E0B"
+_BRAND_INK = "#0F172A"
+_BRAND_INK_SOFT = "#475569"
+_BRAND_GRID = "#E2E8F0"
+_BRAND_BG = "#FFFFFF"
+_HEATMAP_CMAP = LinearSegmentedColormap.from_list(
+    "brand_div",
+    ["#DC2626", "#F59E0B", "#FACC15", "#65A30D", "#0F766E"],
+)
+
+
+def _apply_chart_style() -> None:
+    """Brand-uyumlu seaborn + matplotlib stil presetleri."""
+    sns.set_theme(style="whitegrid", font="DejaVu Sans")
+    plt.rcParams.update({
+        "figure.facecolor": _BRAND_BG,
+        "axes.facecolor": _BRAND_BG,
+        "axes.edgecolor": _BRAND_GRID,
+        "axes.labelcolor": _BRAND_INK_SOFT,
+        "axes.titlecolor": _BRAND_INK,
+        "axes.titleweight": "bold",
+        "axes.titlesize": 16,
+        "axes.titlepad": 20,
+        "axes.labelsize": 11.5,
+        "axes.labelweight": "500",
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.grid": True,
+        "grid.color": _BRAND_GRID,
+        "grid.linewidth": 0.7,
+        "grid.alpha": 0.6,
+        "xtick.color": _BRAND_INK_SOFT,
+        "ytick.color": _BRAND_INK_SOFT,
+        "xtick.labelsize": 10.5,
+        "ytick.labelsize": 10.5,
+        "font.size": 11,
+        "legend.frameon": False,
+        "legend.fontsize": 10.5,
+        "savefig.facecolor": _BRAND_BG,
+        "savefig.edgecolor": "none",
+    })
 from app.core.file_registry import file_registry
 from app.utils.column_detector import detect_columns
 from app.utils.file_utils import ensure_parent, make_job_id, safe_filename
@@ -74,6 +121,64 @@ class ChartService:
             "Bu grafik seçili kategorideki kayıt dağılımını gösterir.",
         )
         return {"chart_path": path, "chart": chart, "rows_charted": int(len(counts)), "warnings": _verify_output(path)}
+
+    def score_radar(
+        self,
+        file_id: str,
+        group_col: str,
+        score_columns_csv: str,
+        chart_title: str = "",
+        top_n: int = 6,
+    ) -> dict:
+        df = file_registry.get_frame(file_id)
+        score_cols = parse_columns(score_columns_csv)
+        require_columns(df, [group_col] + score_cols)
+        pivot = self._score_pivot(df, group_col, score_cols, top_n)
+        if pivot.empty or len(pivot.columns) < 3:
+            return _empty_chart_result("score_radar", "Radar için en az 3 skor boyutu ve grup gerekli.")
+        title = chart_title or f"{group_col} — Skor Profili (Radar)"
+        path = self._save_radar(pivot, title, "score_radar")
+        chart = _chart_output(
+            path,
+            "Skor Radar",
+            "Bu radar grafiği grupların çok boyutlu skor profilini yan yana karşılaştırır.",
+        )
+        return {"chart_path": path, "chart": chart, "groups": list(pivot.index), "warnings": _verify_output(path)}
+
+    def period_delta_chart(
+        self,
+        file_id_a: str,
+        file_id_b: str,
+        group_col: str,
+        score_columns_csv: str,
+        chart_title: str = "",
+        top_n: int = 12,
+    ) -> dict:
+        df_a = file_registry.get_frame(file_id_a)
+        df_b = file_registry.get_frame(file_id_b)
+        score_cols = parse_columns(score_columns_csv)
+        require_columns(df_a, [group_col] + score_cols)
+        require_columns(df_b, [group_col] + score_cols)
+        pivot_a = self._score_pivot(df_a, group_col, score_cols, top_n)
+        pivot_b = self._score_pivot(df_b, group_col, score_cols, top_n)
+        common = pivot_a.index.intersection(pivot_b.index)
+        if len(common) < 2:
+            return _empty_chart_result("period_delta", "İki dönemde ortak grup yok, delta üretilemedi.")
+        delta = (pivot_b.loc[common].mean(axis=1) - pivot_a.loc[common].mean(axis=1)).sort_values()
+        title = chart_title or f"{group_col} — Dönem Skor Değişimi (Δ)"
+        path = self._save_period_delta(delta, title, "period_delta")
+        chart = _chart_output(
+            path,
+            "Dönem Skor Değişimi",
+            "Yeşil çubuklar iyileşmeyi, kırmızı çubuklar kötüleşmeyi gösterir.",
+        )
+        return {
+            "chart_path": path,
+            "chart": chart,
+            "groups": list(delta.index),
+            "deltas": {str(k): float(v) for k, v in delta.items()},
+            "warnings": _verify_output(path),
+        }
 
     def auto_survey_charts(self, file_id: str, top_n: int = 15) -> dict:
         df = file_registry.get_frame(file_id)
@@ -138,53 +243,125 @@ class ChartService:
         return pivot
 
     def _save_bar(self, data: pd.DataFrame, x_col: str, y_col: str, title: str, filename: str) -> str:
+        _apply_chart_style()
         output = _chart_path(filename)
-        height = max(5.5, min(12, len(data) * 0.48 + 2.5))
-        plt.figure(figsize=(12, height), facecolor="white")
-        ax = sns.barplot(data=data, x=y_col, y=x_col, color="#2563EB")
-        ax.set_title(title, fontsize=15, weight="bold", pad=18)
-        ax.set_xlabel(y_col, fontsize=11)
+        height = max(5.5, min(12, len(data) * 0.5 + 3))
+        fig, ax = plt.subplots(figsize=(12, height))
+        sns.barplot(data=data, x=y_col, y=x_col, color=_BRAND_PRIMARY, ax=ax,
+                    edgecolor=_BRAND_PRIMARY_DARK, linewidth=0.8)
+        ax.set_title(title)
+        ax.set_xlabel(y_col)
         ax.set_ylabel("")
-        ax.grid(axis="x", alpha=0.18)
+        ax.grid(axis="x", color=_BRAND_GRID, linewidth=0.7, alpha=0.7)
+        ax.grid(axis="y", visible=False)
         for container in ax.containers:
-            ax.bar_label(container, fmt="%.2f", padding=4, fontsize=9)
+            ax.bar_label(container, fmt="%.2f", padding=5, fontsize=9.5,
+                         color=_BRAND_INK, weight="600")
         sns.despine(left=True, bottom=True)
         plt.tight_layout()
-        plt.savefig(output, dpi=220, bbox_inches="tight")
-        plt.close()
+        fig.savefig(output, dpi=220, bbox_inches="tight")
+        plt.close(fig)
         return str(output.resolve())
 
     def _save_count_bar(self, data: pd.DataFrame, label_col: str, title: str, filename: str) -> str:
+        _apply_chart_style()
         output = _chart_path(filename)
-        height = max(5.5, min(12, len(data) * 0.48 + 2.5))
-        plt.figure(figsize=(12, height), facecolor="white")
-        ax = sns.barplot(data=data, x="count", y=label_col, color="#0F766E")
-        ax.set_title(title, fontsize=15, weight="bold", pad=18)
-        ax.set_xlabel("Kayıt Sayısı", fontsize=11)
+        height = max(5.5, min(12, len(data) * 0.5 + 3))
+        fig, ax = plt.subplots(figsize=(12, height))
+        sns.barplot(data=data, x="count", y=label_col, color=_BRAND_ACCENT, ax=ax,
+                    edgecolor="#B45309", linewidth=0.8)
+        ax.set_title(title)
+        ax.set_xlabel("Kayıt Sayısı")
         ax.set_ylabel("")
-        ax.grid(axis="x", alpha=0.18)
+        ax.grid(axis="x", color=_BRAND_GRID, linewidth=0.7, alpha=0.7)
+        ax.grid(axis="y", visible=False)
         for container in ax.containers:
-            ax.bar_label(container, fmt="%.0f", padding=4, fontsize=9)
+            ax.bar_label(container, fmt="%.0f", padding=5, fontsize=9.5,
+                         color=_BRAND_INK, weight="600")
         sns.despine(left=True, bottom=True)
         plt.tight_layout()
-        plt.savefig(output, dpi=220, bbox_inches="tight")
-        plt.close()
+        fig.savefig(output, dpi=220, bbox_inches="tight")
+        plt.close(fig)
         return str(output.resolve())
 
     def _save_heatmap(self, data: pd.DataFrame, title: str, filename: str) -> str:
+        _apply_chart_style()
         output = _chart_path(filename)
-        width = max(10, min(18, len(data.columns) * 1.5 + 4))
-        height = max(6, min(14, len(data) * 0.5 + 3))
-        plt.figure(figsize=(width, height), facecolor="white")
-        ax = sns.heatmap(data, annot=True, fmt=".2f", cmap="RdYlGn", linewidths=0.5, linecolor="white", cbar_kws={"label": "Ortalama"})
-        ax.set_title(title, fontsize=15, weight="bold", pad=18)
-        ax.set_xlabel("Skor Boyutu", fontsize=11)
-        ax.set_ylabel("Grup", fontsize=11)
-        plt.xticks(rotation=30, ha="right")
-        plt.yticks(rotation=0)
+        width = max(10, min(18, len(data.columns) * 1.6 + 4))
+        height = max(6, min(14, len(data) * 0.55 + 3))
+        fig, ax = plt.subplots(figsize=(width, height))
+        sns.heatmap(
+            data, annot=True, fmt=".2f", cmap=_HEATMAP_CMAP,
+            linewidths=1.2, linecolor=_BRAND_BG,
+            cbar_kws={"label": "Ortalama Skor", "shrink": 0.85, "pad": 0.02},
+            annot_kws={"fontsize": 10.5, "weight": "600", "color": _BRAND_INK},
+            ax=ax,
+        )
+        ax.set_title(title)
+        ax.set_xlabel("Skor Boyutu")
+        ax.set_ylabel("Grup")
+        plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
+        plt.setp(ax.get_yticklabels(), rotation=0)
         plt.tight_layout()
-        plt.savefig(output, dpi=220, bbox_inches="tight")
-        plt.close()
+        fig.savefig(output, dpi=220, bbox_inches="tight")
+        plt.close(fig)
+        return str(output.resolve())
+
+
+    def _save_radar(self, pivot: pd.DataFrame, title: str, filename: str) -> str:
+        _apply_chart_style()
+        import numpy as np
+        output = _chart_path(filename)
+        categories = list(pivot.columns)
+        n_axes = len(categories)
+        angles = np.linspace(0, 2 * np.pi, n_axes, endpoint=False).tolist()
+        angles += angles[:1]
+        fig = plt.figure(figsize=(10, 9))
+        ax = fig.add_subplot(111, projection="polar")
+        palette = ["#0F766E", "#F59E0B", "#2563EB", "#DC2626", "#7C3AED", "#65A30D", "#EC4899", "#0EA5E9"]
+        max_val = float(pivot.values.max() or 5)
+        ax.set_ylim(0, max_val * 1.05)
+        for i, (group, row) in enumerate(pivot.iterrows()):
+            values = row.tolist() + row.tolist()[:1]
+            color = palette[i % len(palette)]
+            ax.plot(angles, values, color=color, linewidth=2.4, label=str(group))
+            ax.fill(angles, values, color=color, alpha=0.18)
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(categories, fontsize=10.5, color=_BRAND_INK_SOFT)
+        ax.tick_params(axis="y", labelsize=9, colors=_BRAND_INK_SOFT)
+        ax.set_rlabel_position(180 / max(1, n_axes))
+        ax.grid(color=_BRAND_GRID, linewidth=0.7, alpha=0.85)
+        ax.spines["polar"].set_color(_BRAND_GRID)
+        ax.set_title(title, color=_BRAND_INK, fontsize=15, weight="bold", pad=24)
+        ax.legend(loc="upper right", bbox_to_anchor=(1.28, 1.05), frameon=False, fontsize=10)
+        plt.tight_layout()
+        fig.savefig(output, dpi=220, bbox_inches="tight")
+        plt.close(fig)
+        return str(output.resolve())
+
+    def _save_period_delta(self, delta: pd.Series, title: str, filename: str) -> str:
+        _apply_chart_style()
+        output = _chart_path(filename)
+        height = max(5, min(13, len(delta) * 0.55 + 3))
+        fig, ax = plt.subplots(figsize=(11, height))
+        colors = ["#16A34A" if v >= 0 else "#DC2626" for v in delta.values]
+        ax.barh(range(len(delta)), delta.values, color=colors,
+                edgecolor=[("#15803D" if v >= 0 else "#B91C1C") for v in delta.values], linewidth=0.7)
+        ax.axvline(0, color=_BRAND_INK, linewidth=1.1, alpha=0.7)
+        ax.set_yticks(range(len(delta)))
+        ax.set_yticklabels([str(idx).replace("\n", " ") for idx in delta.index])
+        ax.set_xlabel("Δ Ortalama Skor (B − A)")
+        ax.set_title(title)
+        ax.grid(axis="x", color=_BRAND_GRID, linewidth=0.7, alpha=0.7)
+        ax.grid(axis="y", visible=False)
+        for i, v in enumerate(delta.values):
+            ax.text(v, i, f"  {v:+.2f}", va="center",
+                    ha="left" if v >= 0 else "right", fontsize=10, weight="600",
+                    color=("#15803D" if v >= 0 else "#B91C1C"))
+        sns.despine(left=True, bottom=True)
+        plt.tight_layout()
+        fig.savefig(output, dpi=220, bbox_inches="tight")
+        plt.close(fig)
         return str(output.resolve())
 
 
@@ -214,13 +391,27 @@ def _wrap_label(value: object, width: int = 28) -> str:
     return fill(text, width=width, break_long_words=False, replace_whitespace=False)
 
 
+_PUBLIC_FILES_BASE = "http://localhost:8007"
+
+
+def _to_public_url(local_path: str) -> str:
+    p = (local_path or "").replace("\\", "/")
+    if "/app/data/outputs/" in p:
+        return p.replace("/app/data/outputs", _PUBLIC_FILES_BASE)
+    return local_path
+
+
 def _chart_output(path: str, title: str, description: str) -> dict:
+    url = _to_public_url(path)
     return {
         "type": "chart",
         "title": title,
         "description": description,
         "format": "png",
         "path": path,
+        "url": url,
+        "public_url": url,
+        "markdown": f"![{title}]({url})",
         "mime_type": "image/png",
         "display": True,
     }

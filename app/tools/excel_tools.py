@@ -8,6 +8,7 @@ from typing import Any
 from fastmcp import FastMCP
 
 from app.core.response_schema import ok_response, tool_handler
+from app.services.email_quality_service import email_quality_service
 from app.services.excel_compare_service import excel_compare_service
 from app.services.excel_query_service import excel_query_service
 from app.services.excel_service import excel_service
@@ -462,6 +463,98 @@ def register_excel_tools(mcp: FastMCP) -> None:
             return ok_response("deduplicate_spreadsheet", "Tekillestirme tamamlandi.", data, files=files)
 
         return tool_handler("deduplicate_spreadsheet", run)
+
+    @mcp.tool()
+    def find_missing_in_target_file(
+        source_file_id: str = "",
+        target_file_id: str = "",
+        key_columns: str = "Email",
+        source_filter_query: str = "",
+        source_structured_query: dict | None = None,
+        source_file_query: str = "",
+        target_file_query: str = "",
+        sample_limit: int = 20,
+        export: bool = True,
+    ) -> str:
+        """Source dosyasına filtre uygula, sonra Target dosyasında key_columns ile EŞLEŞMEYEN
+        satırları döndür (anti-join). Use case: 'Filtreden geçen adaylardan, anket iletilenler
+        listesinde olmayanları bul.' Key kolon isimleri iki dosyada farklı olabilir (örn 'Email'
+        kaynak ↔ 'Aday-Email' hedef) — fuzzy eşleme otomatik yapılır.
+
+        file_id YOKSA file_query ile dosyayı isimden çözer — örn source_file_query='basvuru',
+        target_file_query='anket_iletilenler'. Tek tool çağrısıyla tüm akış (dosya seçimi +
+        filtre + anti-join + xlsx export) tamamlanır."""
+
+        def run():
+            data = excel_compare_service.find_missing_in_target(
+                source_file_id=source_file_id,
+                target_file_id=target_file_id,
+                key_columns=key_columns,
+                source_filter_query=source_filter_query,
+                source_structured_query=source_structured_query,
+                source_file_query=source_file_query,
+                target_file_query=target_file_query,
+                sample_limit=sample_limit,
+                export=export,
+            )
+            return ok_response(
+                "find_missing_in_target_file",
+                f"Anti-join tamamlandi: {data['missing_count']} kayit eslesmedi.",
+                data,
+                files=data.get("files", []),
+                generated_outputs=data.get("generated_outputs", []),
+                warnings=data.get("warnings", []),
+            )
+
+        return tool_handler("find_missing_in_target_file", run)
+
+    @mcp.tool()
+    def audit_email_quality(
+        file_id: str = "",
+        file_query: str = "",
+        email_column: str = "",
+        export: bool = True,
+        only_invalid_export: bool = False,
+        sample_limit: int = 15,
+    ) -> str:
+        """Email kolonunu kategorize ederek geçersiz email'leri tespit eder. Düzeltme yapmaz —
+        sadece **işaretler**: export edilen xlsx'te geçersiz satırlar kırmızı arka plan + email
+        hücresi koyu kırmızı, geçerliler yeşil hücre. İki ekstra kolon eklenir: 'Email Durum Kodu'
+        (valid/no_at/whitespace/short_tld vb) ve 'Email Durum' (Türkçe açıklama).
+
+        Tespit ettiği problem türleri: boş, @ yok, birden fazla @, boşluk, domain'de nokta yok,
+        kısa TLD (<2), geçersiz karakter, ardışık nokta, başta/sonda nokta, yerel kısım boş,
+        domain boş.
+
+        file_id YOKSA file_query ile dosya çözülür (örn file_query='basvuru'). Email kolonu
+        otomatik tespit edilir; bulunamazsa email_column ile elle ver.
+
+        only_invalid_export=true → sadece problemli satırları içeren xlsx
+        only_invalid_export=false (default) → tüm satırlar + her satıra durum etiketi"""
+
+        def run():
+            data = email_quality_service.audit(
+                file_id=file_id,
+                file_query=file_query,
+                email_column=email_column,
+                export=export,
+                only_invalid_export=only_invalid_export,
+                sample_limit=sample_limit,
+            )
+            summary = data.get("summary", {})
+            msg = (
+                f"Email kalite denetimi tamam: {summary.get('invalid_count', 0)} geçersiz "
+                f"({summary.get('invalid_pct', 0)}%) / {summary.get('total', 0)} toplam."
+            )
+            return ok_response(
+                "audit_email_quality",
+                msg,
+                data,
+                files=data.get("files", []),
+                generated_outputs=data.get("generated_outputs", []),
+            )
+
+        return tool_handler("audit_email_quality", run)
 
     @mcp.tool()
     def clear_spreadsheet_registry(file_id: str = "") -> str:

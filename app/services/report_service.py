@@ -167,13 +167,37 @@ class ReportService:
         return {"summary_markdown": content, "files": files, "generated_outputs": outputs}
 
 
+_PUBLIC_FILES_BASE = "http://localhost:8007"
+
+
+def _to_public_url(local_path: str) -> str:
+    p = (local_path or "").replace("\\", "/")
+    if "/app/data/outputs/" in p:
+        return p.replace("/app/data/outputs", _PUBLIC_FILES_BASE)
+    return local_path
+
+
 def _report_output(path: str, title: str, description: str, fmt: str, mime_type: str, display: bool = True) -> dict:
+    url = _to_public_url(path)
+    if fmt == "html":
+        markdown = f"[📄 {title} (HTML)]({url})"
+    elif fmt == "md" or fmt == "markdown":
+        markdown = f"[📝 {title} (Markdown)]({url})"
+    elif fmt == "docx":
+        markdown = f"[📑 {title} (Word)]({url})"
+    elif fmt == "json":
+        markdown = f"[🧾 {title} (JSON)]({url})"
+    else:
+        markdown = f"[{title}]({url})"
     return {
         "type": "report",
         "title": title,
         "description": description,
         "format": fmt,
         "path": path,
+        "url": url,
+        "public_url": url,
+        "markdown": markdown,
         "mime_type": mime_type,
         "display": display,
     }

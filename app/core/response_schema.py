@@ -19,7 +19,7 @@ def ok_response(
     warnings: list[str] | None = None,
     generated_outputs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    outputs = list(generated_outputs or [])
+    outputs = [_enrich_output(item) for item in (generated_outputs or []) if isinstance(item, dict)]
     known_paths = {item.get("path") for item in outputs if isinstance(item, dict)}
     outputs.extend([item for item in _path_outputs(files or [], "file") if item["path"] not in known_paths])
     known_paths = {item.get("path") for item in outputs if isinstance(item, dict)}
@@ -76,6 +76,51 @@ def tool_handler(tool_name: str, fn: Callable[[], dict[str, Any]]) -> str:
         return to_json(error_response(tool_name, "İşlem başarısız.", "UNEXPECTED_ERROR", str(exc)))
 
 
+_PUBLIC_FILES_BASE = "http://localhost:8007"
+
+
+def _to_public_url(local_path: str) -> str:
+    p = (local_path or "").replace("\\", "/")
+    if "/app/data/outputs/" in p:
+        return p.replace("/app/data/outputs", _PUBLIC_FILES_BASE)
+    return local_path
+
+
+def _markdown_for(path: str, title: str, suffix: str, url: str) -> str:
+    if suffix == "png":
+        return f"![{title}]({url})"
+    icons = {
+        "xlsx": "📊",
+        "csv": "📊",
+        "tsv": "📊",
+        "docx": "📑",
+        "json": "🧾",
+        "html": "📄",
+        "md": "📝",
+        "txt": "📄",
+        "pdf": "📕",
+    }
+    icon = icons.get(suffix, "📎")
+    label = f"{icon} {title}" if suffix not in {"png"} else title
+    return f"[{label}]({url})"
+
+
+def _enrich_output(item: dict[str, Any]) -> dict[str, Any]:
+    """Add url/public_url/markdown to a generated_outputs item if missing."""
+    out = dict(item)
+    path = out.get("path", "")
+    if not path:
+        return out
+    suffix = (out.get("format") or path.rsplit(".", 1)[-1] if "." in path else "").lower()
+    title = out.get("title") or path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+    url = out.get("url") or _to_public_url(path)
+    out.setdefault("url", url)
+    out.setdefault("public_url", url)
+    if not out.get("markdown"):
+        out["markdown"] = _markdown_for(path, title, suffix, url)
+    return out
+
+
 def _path_outputs(paths: list[str], output_type: str) -> list[dict[str, Any]]:
     outputs = []
     for path in paths:
@@ -86,17 +131,26 @@ def _path_outputs(paths: list[str], output_type: str) -> list[dict[str, Any]]:
             "png": "image/png",
             "html": "text/html",
             "md": "text/markdown",
+            "txt": "text/plain",
+            "csv": "text/csv",
+            "tsv": "text/tab-separated-values",
             "json": "application/json",
+            "pdf": "application/pdf",
             "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         }.get(suffix, "application/octet-stream")
+        title = path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        url = _to_public_url(path)
         outputs.append({
             "type": output_type,
-            "title": path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1],
+            "title": title,
             "description": "",
             "format": suffix or "file",
             "path": path,
+            "url": url,
+            "public_url": url,
+            "markdown": _markdown_for(path, title, suffix, url),
             "mime_type": mime,
-            "display": output_type in {"chart", "report"} or suffix in {"png", "html", "md"},
+            "display": output_type in {"chart", "report", "document"} or suffix in {"png", "html", "md", "xlsx", "docx", "csv", "tsv", "txt", "pdf", "json"},
         })
     return outputs

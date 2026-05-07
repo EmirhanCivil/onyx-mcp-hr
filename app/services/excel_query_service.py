@@ -182,6 +182,8 @@ class ExcelQueryService:
                 }
             )
 
+        per_condition_counts = [int(m.sum()) for m in masks]
+
         if logic == "AND":
             final_mask = pd.Series(True, index=df.index)
             for mask in masks:
@@ -193,6 +195,12 @@ class ExcelQueryService:
 
         matched_df = df[final_mask].copy()
         matched_count = int(final_mask.sum())
+
+        diagnostic: dict[str, Any] = {}
+        if matched_count == 0:
+            diagnostic = self._build_zero_result_diagnostic(
+                df, applied_conditions, per_condition_counts, logic
+            )
 
         export_requested = bool(query.get("export")) or export or mode == "export"
         export_path = None
@@ -231,9 +239,11 @@ class ExcelQueryService:
             "logic": logic,
             "resolved_fields": resolved_fields,
             "conditions_applied": applied_conditions,
+            "per_condition_counts": per_condition_counts,
             "sample_rows": sample_rows,
             "summary": summary,
             "export_path": export_path,
+            "zero_result_diagnostic": diagnostic,
         }
         return {
             "data": data,
@@ -312,7 +322,17 @@ class ExcelQueryService:
             if numeric.notna().mean() >= 0.6:
                 left = numeric
                 v1 = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+                # Fallback: if value is a date-like string ("2004-01-01") on a year column,
+                # extract the year so "Doğum Yılı >= 2004" still works.
+                if pd.isna(v1) and isinstance(value, str):
+                    m = re.search(r"\b(19|20)\d{2}\b", value)
+                    if m:
+                        v1 = float(m.group(0))
                 v2 = pd.to_numeric(pd.Series([value_to]), errors="coerce").iloc[0] if value_to is not None else None
+                if pd.isna(v2) and isinstance(value_to, str):
+                    m2 = re.search(r"\b(19|20)\d{2}\b", value_to)
+                    if m2:
+                        v2 = float(m2.group(0))
                 return _numeric_mask(left, operator, v1, v2)
 
             parsed = pd.to_datetime(series, errors="coerce", dayfirst=True)
@@ -408,6 +428,89 @@ class ExcelQueryService:
             out |= col_mask
         return out
 
+    def _build_zero_result_diagnostic(
+        self,
+        df: pd.DataFrame,
+        applied_conditions: list[dict[str, Any]],
+        per_condition_counts: list[int],
+        logic: str,
+    ) -> dict:
+        """When matched_count=0, give the agent enough info to self-correct in one round-trip."""
+        per_condition_report = []
+        suggestions: list[str] = []
+        for cond, alone in zip(applied_conditions, per_condition_counts):
+            field_name = cond.get("resolved_field") or "*"
+            op = cond.get("operator", "")
+            val = cond.get("value")
+            entry: dict[str, Any] = {
+                "field": cond.get("field"),
+                "resolved_field": field_name,
+                "operator": op,
+                "value": val,
+                "alone_count": int(alone),
+            }
+            if field_name and field_name != "*" and field_name in df.columns:
+                series = df[field_name]
+                top = (
+                    series.map(lambda v: "(empty)" if pd.isna(v) or str(v).strip() == "" else str(v).strip())
+                    .value_counts()
+                    .head(10)
+                )
+                entry["column_top_values"] = [
+                    {"value": str(k), "count": int(v)} for k, v in top.items()
+                ]
+                # Suggest closest fuzzy match for text equals/contains conditions that returned 0.
+                if alone == 0 and op in {"equals", "contains", "starts_with", "ends_with"} and isinstance(val, str):
+                    val_norm = self._normalize_text(val)
+                    best, best_score = "", 0.0
+                    for candidate in top.index:
+                        cand_norm = self._normalize_text(str(candidate))
+                        if not cand_norm:
+                            continue
+                        if val_norm in cand_norm or cand_norm in val_norm:
+                            score = 0.95
+                        else:
+                            score = SequenceMatcher(None, val_norm, cand_norm).ratio()
+                        if score > best_score:
+                            best, best_score = str(candidate), score
+                    if best and best_score >= 0.55:
+                        entry["suggested_value"] = best
+                        entry["suggested_operator"] = "contains"
+                        suggestions.append(
+                            f"'{val}' kolon '{field_name}' ile eşleşmedi (alone_count=0). "
+                            f"En yakın değer: '{best}' (skor={round(best_score, 2)}). "
+                            f"contains operatörüyle '{best}' veya '{val}' dene."
+                        )
+                    elif best:
+                        suggestions.append(
+                            f"'{val}' kolon '{field_name}' ile eşleşmedi. "
+                            f"Mevcut değerlerden bazıları: {', '.join(str(k) for k in top.index[:5])}. "
+                            f"Kullanıcıya hangi değeri istediğini sor veya contains operatörüne düş."
+                        )
+            per_condition_report.append(entry)
+
+        # Suggest dropping the most-restrictive condition for AND queries.
+        if logic == "AND" and len(per_condition_counts) > 1 and any(c == 0 for c in per_condition_counts):
+            zero_idx = [i for i, c in enumerate(per_condition_counts) if c == 0]
+            for idx in zero_idx:
+                cond = applied_conditions[idx]
+                suggestions.append(
+                    f"AND zincirinde koşul #{idx + 1} ({cond.get('resolved_field')}={cond.get('value')}) "
+                    f"tek başına 0 satır tutuyor — bu koşul filtreyi sıfırlıyor. "
+                    f"Düzelt veya bu koşulu kaldır."
+                )
+        elif logic == "AND" and all(c > 0 for c in per_condition_counts):
+            suggestions.append(
+                "Her koşul tek başına satır tutuyor ama AND birleşiminde örtüşme yok. "
+                "Veride bu kombinasyon olmayabilir — kullanıcıya bilgi ver, gevşetme veya farklı kombinasyon öner."
+            )
+
+        return {
+            "logic": logic,
+            "per_condition_report": per_condition_report,
+            "suggestions": suggestions,
+        }
+
     @staticmethod
     def _summary(matched_df: pd.DataFrame, resolutions: list[ResolvedField]) -> dict:
         # Lightweight distribution on resolved fields (top values) without dumping raw rows.
@@ -454,7 +557,6 @@ class ExcelQueryService:
             "how many",
             "ne kadar",
             "listele",
-            "listele",
             "bul",
             "getir",
             "goster",
@@ -464,6 +566,12 @@ class ExcelQueryService:
             "disa aktar",
             "indir",
             "download",
+            "adaylar",
+            "adayi",
+            "aday",
+            "kayit",
+            "kayitlar",
+            "kayitlari",
         ):
             cleanup = cleanup.replace(f" {phrase} ", " ")
         cleanup = " ".join(cleanup.split())
@@ -489,27 +597,90 @@ class ExcelQueryService:
             # - "2002 sonrasi dogumlular" -> dogum tarihi >= 2003-01-01
             # - "2002 ve sonrasi dogumlular" -> dogum tarihi >= 2002-01-01
             # - "2024 oncesi" -> tarih <= 2023-12-31 (coarse year cut)
+            # School pattern: "X universiteli/universitesi/liseli/lisesi/mezunu/mezunlari" → okul contains X
+            school_match = re.match(
+                r"^(.+?)\s+(universiteli|universitesi|liseli|lisesi|mezunu|mezunlari)$",
+                part.strip(),
+            )
+            if school_match:
+                name = school_match.group(1).strip()
+                if name:
+                    conditions.append({"field": "okul", "operator": "contains", "value": name})
+                    continue
+
+            # Department pattern: "X muhendisligi" / "X bolumu" / "X okuyan" → bolum contains X
+            mh_match = re.match(r"^(.+?\s+muhendisligi)\b.*$", part.strip())
+            if mh_match:
+                name = mh_match.group(1).strip()
+                conditions.append({"field": "bolum", "operator": "contains", "value": name})
+                continue
+            dept_match = re.match(r"^(.+?)\s+(bolumu|bolumunde|bolumunden|okuyan|okuyanlar|ogrenci|ogrencisi|ogrencileri)\s*$", part.strip())
+            if dept_match:
+                name = dept_match.group(1).strip()
+                if name:
+                    conditions.append({"field": "bolum", "operator": "contains", "value": name})
+                    continue
+
+            # Status / form durumu: "X durumunda" / "X durumunda olan(lar)" / "form durumu X olanlar"
+            # MUST come before City to avoid "iletildi durumunda" → city="iletildi durumun"+"da"
+            status_match = (
+                re.match(r"^(.+?)\s+durumunda(?:\s+olan(?:lar)?)?\s*$", part.strip())
+                or re.match(r"^form(?:u)?\s+durumu\s+(.+?)(?:\s+olan(?:lar)?)?\s*$", part.strip())
+            )
+            if status_match:
+                name = status_match.group(1).strip()
+                if name:
+                    conditions.append({"field": "form durumu", "operator": "contains", "value": name})
+                    continue
+
+            # Direct status keywords (without "olan" suffix) — match dummy values: iletildi/iletilmedi/beklemede/hatali email
+            stripped = re.sub(r"\s+olan(?:lar)?$", "", part.strip()).strip()
+            if stripped in {"iletildi", "iletilmedi", "beklemede", "hatali email", "hatalı email"}:
+                conditions.append({"field": "form durumu", "operator": "contains", "value": stripped})
+                continue
+
+            # City pattern: "X'da yasayan" / "X ilinde" / "X'li adaylar" / "X sehrinde" / "Xda" → sehir contains X
+            city_match = (
+                re.match(r"^(.+?)\s+(ilinde|sehrinde|sehrindeki|sehir)\s*$", part.strip())
+                or re.match(r"^(.+?)(da|de|ta|te|nda|nde|nta|nte)\s+(yasayan|yasiyan|oturan|ikamet|cali[sş]an|cali[sş]anlar)\s*$", part.strip())
+                or re.match(r"^(.+?)(lu|lü|li|lı)\s*(aday|adaylar|kayit|kayitlar|sakin|sakinler)?\s*$", part.strip())
+                or re.match(r"^(.+?)(da|de|ta|te|nda|nde|nta|nte)$", part.strip())  # locative-only: "istanbulda"
+            )
+            if city_match:
+                name = city_match.group(1).strip()
+                # Reject too-short or non-alpha tokens (skips "kacli", "yili", "lo", numbers)
+                if name and len(name) >= 4 and not name.isdigit() and not re.search(r"\d", name):
+                    conditions.append({"field": "sehir", "operator": "contains", "value": name})
+                    continue
+
             year_match = re.search(r"\b(19|20)\d{2}\b", part)
             if year_match and any(token in part for token in ("sonra", "sonrasi", "after", "once", "oncesi", "before")):
                 year = int(year_match.group(0))
-                field_guess = "dogum tarihi" if any(t in part for t in ("dogum", "doğum", "birth", "born")) else "tarih"
+                # Field guess: prefer plain "dogum yili" (year column) when "yil" appears or
+                # when the user phrasing is just "X sonrası doğumlular"; fall back to "dogum tarihi"
+                # if the user explicitly said "tarih". `_resolve_column` will fuzzy-match.
+                if any(t in part for t in ("yil", "year")):
+                    field_guess = "dogum yili"
+                elif any(t in part for t in ("dogum", "birth", "born")):
+                    field_guess = "dogum yili"
+                else:
+                    field_guess = "tarih"
 
                 is_after = any(t in part for t in ("sonra", "sonrasi", "after"))
                 is_before = any(t in part for t in ("once", "oncesi", "before"))
-                inclusive = any(t in part for t in ("ve", "dahil", "including", ">=", "<="))
+                inclusive = any(t in part for t in ("dahil", "including", ">=", "<="))
 
+                # Year-only value (works on both numeric and datetime columns thanks to fallback in _condition_mask).
                 if is_after:
-                    # "2002 sonrası" is typically interpreted as 2003+ unless the user signals inclusion.
                     start_year = year if inclusive else (year + 1)
                     conditions.append(
-                        {"field": field_guess, "operator": "greater_or_equal", "value": f"{start_year:04d}-01-01"}
+                        {"field": field_guess, "operator": "greater_or_equal", "value": str(start_year)}
                     )
                     continue
                 if is_before:
-                    # "2002 öncesi" interpreted as <= 2001-12-31 unless inclusion is signaled.
                     end_year = year if inclusive else (year - 1)
                     conditions.append(
-                        {"field": field_guess, "operator": "less_or_equal", "value": f"{end_year:04d}-12-31"}
+                        {"field": field_guess, "operator": "less_or_equal", "value": str(end_year)}
                     )
                     continue
 
@@ -526,8 +697,10 @@ class ExcelQueryService:
                     conditions.append({"field": "", "operator": "is_empty", "value": ""})
                 continue
 
-            # Value-only fallback: search term across all columns.
-            conditions.append({"field": "", "operator": "contains", "value": part.strip()})
+            # Value-only fallback: search term across all columns. Strip lingering suffixes.
+            cleaned = part.strip()
+            cleaned = re.sub(r"\s+(okuyan|okuyanlar|ogrenci|ogrencisi|ogrencileri|yasayan|yasiyan|oturan|olan|olanlar|olanlari|adaylar|aday|kayitlar|kayit)$", "", cleaned)
+            conditions.append({"field": "", "operator": "contains", "value": cleaned})
 
         return {"conditions": conditions, "logic": logic, "return_mode": return_mode}
 
@@ -542,10 +715,12 @@ def _expand_semantic_terms(req_norm: str) -> list[str]:
     # Keep it small and generic; this is not a domain lock-in.
     groups = [
         ("email", ("email", "e posta", "eposta", "mail")),
-        ("status", ("durum", "status", "stage", "phase", "asama", "surec", "process")),
+        ("status", ("durum", "status", "stage", "phase", "asama", "surec", "process", "form durumu")),
         ("university", ("universite", "university", "school", "okul")),
         ("department", ("departman", "department", "birim", "bolum", "unit", "team", "ekip")),
+        ("city", ("sehir", "il", "city", "lokasyon", "yer", "location")),
         ("date", ("tarih", "date", "created at", "updated at", "olusturma", "guncelleme")),
+        ("year", ("dogum yili", "yil", "year", "birth year", "dogum tarihi", "birth date")),
         ("id", ("id", "record id", "unique id", "no", "numara", "number", "sicil")),
     ]
 

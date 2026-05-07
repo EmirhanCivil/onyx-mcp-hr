@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from difflib import SequenceMatcher
 from itertools import combinations
 
@@ -292,21 +293,266 @@ class ExcelCompareService:
         }
 
     def summarize_column(self, file_id: str, column: str = "", query: str = "", limit: int = 30) -> dict:
+        from app.services.excel_query_service import excel_query_service
+
         df = file_registry.get_frame(file_id)
-        target_column = column if column in df.columns else self._best_column(df, column or query)
-        counts = (
-            df[target_column]
-            .map(lambda item: "(empty)" if pd.isna(item) or str(item).strip() == "" else str(item).strip())
-            .value_counts()
-            .head(limit)
-        )
-        return {
+
+        # If `query` is a natural-language filter (contains operators like "ve", year tokens,
+        # locative suffixes, or column hints), apply it as a filter first, then summarize.
+        # Otherwise treat `query` as a column-name hint (legacy behavior).
+        filtered_df = df
+        applied_filter = None
+        if query:
+            looks_like_filter = bool(
+                re.search(r"\b(19|20)\d{2}\b", query)
+                or any(t in f" {query.lower()} " for t in (" ve ", " veya ", " and ", " or "))
+                or any(t in query.lower() for t in ("li ", "lı ", "lu ", "lü ", "da ", "de ", "ta ", "te ",
+                                                      "sonrasi", "oncesi", "yasayan", "ilinde", "sehrinde",
+                                                      "muhendisligi", "bolumu", "okuyan", "mezunu",
+                                                      "durumunda", "iletildi", "iletilmedi", "beklemede"))
+            )
+            if looks_like_filter:
+                try:
+                    res = excel_query_service.query_rows(file_id, natural_query=query, return_mode="count")
+                    # Re-apply filter to get filtered DataFrame
+                    structured = excel_query_service._infer_structured_query(query)
+                    if structured and structured.get("conditions"):
+                        # Reuse query_rows with full mode to extract filtered df
+                        from app.core.exceptions import InvalidInputError  # noqa
+                        masks = []
+                        for cond in res["data"]["conditions_applied"]:
+                            field = cond.get("resolved_field") or "*"
+                            op = cond["operator"]
+                            v = cond["value"]
+                            v2 = cond.get("value_to")
+                            if field == "*":
+                                text_cols = [c for c in df.columns if df[c].dtype == object]
+                                masks.append(excel_query_service._any_field_mask(df, text_cols, op, v, v2))
+                            else:
+                                masks.append(excel_query_service._condition_mask(df, field, op, v, v2))
+                        if masks:
+                            mask = masks[0]
+                            for m in masks[1:]:
+                                mask = (mask & m) if str(res["data"]["logic"]).upper() == "AND" else (mask | m)
+                            filtered_df = df[mask].copy()
+                            applied_filter = {
+                                "natural_query": query,
+                                "logic": res["data"]["logic"],
+                                "conditions": res["data"]["conditions_applied"],
+                                "matched_count": int(mask.sum()),
+                            }
+                except Exception:
+                    filtered_df = df
+
+        # Resolve target column(s): allow comma-separated list
+        col_input = column.strip()
+        if "," in col_input:
+            requested = [c.strip() for c in col_input.split(",") if c.strip()]
+        elif col_input:
+            requested = [col_input]
+        else:
+            requested = [self._best_column(df, query or "")]
+
+        per_column: list[dict] = []
+        for req in requested:
+            target = req if req in filtered_df.columns else self._best_column(filtered_df, req)
+            counts = (
+                filtered_df[target]
+                .map(lambda item: "(empty)" if pd.isna(item) or str(item).strip() == "" else str(item).strip())
+                .value_counts()
+                .head(limit)
+            )
+            total = int(len(filtered_df))
+            per_column.append({
+                "column": target,
+                "requested": req,
+                "total_rows": total,
+                "distinct_values": int(filtered_df[target].nunique(dropna=False)),
+                "top_values": [
+                    {
+                        "value": str(idx),
+                        "count": int(val),
+                        "percent": round(100 * float(val) / total, 1) if total else 0.0,
+                    }
+                    for idx, val in counts.items()
+                ],
+            })
+
+        result: dict = {
             "file_id": file_id,
-            "column": target_column,
-            "total_rows": int(len(df)),
-            "distinct_values": int(df[target_column].nunique(dropna=False)),
-            "top_values": [{"value": str(index), "count": int(value)} for index, value in counts.items()],
+            "scope_total_rows": int(len(filtered_df)),
+            "source_total_rows": int(len(df)),
+            "applied_filter": applied_filter,
+            "columns": per_column,
         }
+        # Backward-compat: if single column requested, also expose top-level fields the old callers rely on.
+        if len(per_column) == 1:
+            first = per_column[0]
+            result.update({
+                "column": first["column"],
+                "total_rows": first["total_rows"],
+                "distinct_values": first["distinct_values"],
+                "top_values": first["top_values"],
+            })
+        return result
+
+    def find_missing_in_target(
+        self,
+        source_file_id: str = "",
+        target_file_id: str = "",
+        key_columns: str = "Email",
+        source_filter_query: str = "",
+        source_structured_query: dict | None = None,
+        source_file_query: str = "",
+        target_file_query: str = "",
+        sample_limit: int = 20,
+        export: bool = True,
+    ) -> dict:
+        """Source'a filtre uygula, sonra Target'ta key_columns ile eşleşmeyen satırları döndür.
+        Use case: 'Filtreden geçen adaylardan, anket iletilenler listesinde olmayanları bul.'
+        file_id verilmezse file_query ile dosyayı isimden çöz."""
+        from app.services.excel_query_service import excel_query_service
+        from app.exporters.excel_exporter import export_dataframe
+        from app.services.excel_service import excel_service as _excel_service
+
+        source_file_id = source_file_id or self._resolve_file(source_file_query, _excel_service)
+        target_file_id = target_file_id or self._resolve_file(target_file_query, _excel_service)
+        if not source_file_id or not target_file_id:
+            raise ValueError(
+                "source_file_id veya source_file_query, target_file_id veya target_file_query verilmeli."
+            )
+
+        source = file_registry.get_frame(source_file_id)
+        target = file_registry.get_frame(target_file_id)
+
+        # 1. Resolve key columns in both files (fuzzy)
+        key_hints = [k.strip() for k in str(key_columns or "").split(",") if k.strip()]
+        if not key_hints:
+            raise ValueError("key_columns boş olamaz — örn 'Email' veya 'Ad Soyad,Email'")
+        source_keys: list[str] = []
+        target_keys: list[str] = []
+        for hint in key_hints:
+            sk = hint if hint in source.columns else self._best_column(source, hint)
+            tk = hint if hint in target.columns else self._best_column(target, hint)
+            source_keys.append(sk)
+            target_keys.append(tk)
+
+        # 2. Apply filter to source if provided
+        warnings: list[str] = []
+        if source_structured_query or source_filter_query:
+            mask = self._build_filter_mask(
+                source, source_structured_query, source_filter_query, excel_query_service
+            )
+            filtered_source = source[mask].copy()
+            applied_filter_summary = {
+                "source_natural_query": source_filter_query,
+                "source_structured_query": source_structured_query,
+                "filtered_count": int(len(filtered_source)),
+            }
+        else:
+            filtered_source = source.copy()
+            applied_filter_summary = None
+
+        # 3. Build target key set (normalized for case/TR-tolerance)
+        target_key_set = set()
+        for row in target[target_keys].itertuples(index=False):
+            target_key_set.add(tuple(_normalize_compare_value(v) for v in row))
+
+        # 4. Anti-join: source rows whose key tuple NOT in target
+        def _src_key(row) -> tuple:
+            return tuple(_normalize_compare_value(row[c]) for c in source_keys)
+
+        if len(filtered_source):
+            keys_series = filtered_source.apply(_src_key, axis=1)
+            in_target_mask = keys_series.map(lambda k: k in target_key_set)
+        else:
+            in_target_mask = pd.Series([], dtype=bool)
+        missing_df = filtered_source[~in_target_mask].copy()
+        matched_df = filtered_source[in_target_mask].copy()
+
+        # 5. Export missing as xlsx
+        files: list[str] = []
+        outputs: list[dict] = []
+        export_path: str | None = None
+        if export and len(missing_df):
+            export_path = export_dataframe(missing_df, "candidates_missing_in_target")
+            files.append(export_path)
+            outputs.append({
+                "type": "file",
+                "title": "candidates_missing_in_target.xlsx",
+                "description": "Filtre kümesinde olup target dosyasında bulunmayan kayıtlar.",
+                "format": "xlsx",
+                "path": export_path,
+                "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "display": True,
+            })
+
+        return {
+            "source_file_id": source_file_id,
+            "target_file_id": target_file_id,
+            "source_keys": source_keys,
+            "target_keys": target_keys,
+            "source_total": int(len(source)),
+            "source_filtered_count": int(len(filtered_source)),
+            "target_total": int(len(target)),
+            "in_target_count": int(len(matched_df)),
+            "missing_count": int(len(missing_df)),
+            "missing_sample": safe_preview(missing_df, sample_limit),
+            "applied_filter": applied_filter_summary,
+            "files": files,
+            "generated_outputs": outputs,
+            "warnings": warnings,
+        }
+
+    @staticmethod
+    def _resolve_file(file_query: str, excel_svc) -> str:
+        """Dosya adı/query'den file_id çıkar — yoksa boş string döner."""
+        if not file_query:
+            return ""
+        try:
+            excel_svc.scan_uploads()
+        except Exception:
+            pass
+        selected = excel_svc.select_file(file_query, "")
+        if selected and "file_id" in selected:
+            return selected["file_id"]
+        return ""
+
+    def _build_filter_mask(
+        self,
+        df: pd.DataFrame,
+        structured_query: dict | None,
+        natural_query: str,
+        query_svc,
+    ) -> pd.Series:
+        """Build a pandas boolean mask using query_service's parser + condition mask helpers."""
+        query = structured_query or query_svc._infer_structured_query(natural_query) or {}
+        conditions = query.get("conditions") or []
+        logic = str(query.get("logic") or "AND").strip().upper()
+        if not conditions:
+            return pd.Series(True, index=df.index)
+
+        masks: list[pd.Series] = []
+        text_cols = [str(c) for c in df.columns if df[c].dtype == object]
+        for cond in conditions:
+            field = str(cond.get("field") or "").strip()
+            operator = str(cond.get("operator") or "").strip().lower()
+            value = cond.get("value")
+            value_to = cond.get("value_to")
+            if not field:
+                masks.append(query_svc._any_field_mask(df, text_cols, operator, value, value_to))
+                continue
+            resolved = field if field in df.columns else query_svc._resolve_column(df, field).resolved
+            masks.append(query_svc._condition_mask(df, resolved, operator, value, value_to))
+        if logic == "OR":
+            final = pd.Series(False, index=df.index)
+            for m in masks:
+                final |= m
+        else:
+            final = pd.Series(True, index=df.index)
+            for m in masks:
+                final &= m
+        return final
 
     @staticmethod
     def _rows_only(df_a: pd.DataFrame, df_b: pd.DataFrame, columns: list[str] | None, side: str) -> pd.DataFrame:

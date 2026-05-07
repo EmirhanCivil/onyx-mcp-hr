@@ -7,6 +7,7 @@ matplotlib
 seaborn
 numpy
 python-docx
+reportlab
 pypdf
 xlrd
 odfpy

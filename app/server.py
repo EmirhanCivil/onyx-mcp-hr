@@ -11,6 +11,7 @@ from app.logging_config import logger
 from app.tools.agent_tools import register_agent_tools
 from app.tools.chart_tools import register_chart_tools
 from app.tools.cv_tools import register_cv_tools
+from app.tools.document_tools import register_document_tools
 from app.tools.excel_tools import register_excel_tools
 from app.tools.hr_tools import register_hr_tools
 from app.tools.hr_intelligence_tools import register_hr_intelligence_tools
@@ -54,6 +55,7 @@ def create_server() -> FastMCP:
     register_agent_tools(mcp)
     register_excel_tools(mcp)
     register_cv_tools(mcp)
+    register_document_tools(mcp)
     register_library_tools(mcp)
     register_hr_tools(mcp)
     register_hr_intelligence_tools(mcp)
