@@ -1,8 +1,27 @@
 # Survey & Excel Intelligence MCP
 
-Onyx uzerinden kullanilmak uzere tasarlanmis CV, Excel/CSV ve IK anket analiz MCP server'i.
+Onyx uzerinden kullanilmak uzere tasarlanmis CV, Excel/CSV ve IK anket analiz MCP server'i. **72 tool** — CV/Excel/anket analizi, kalite denetimi, otomatik filtre/sorgu, anti-join, grafik (bar/heatmap/radar/diverging), HR raporu ve serbest doküman üretimi.
 
 Ana ilke: buyuk Excel/CSV dosyalari LLM context'ine tasinmaz. Hesaplama, filtreleme, karsilastirma, duplicate temizleme, anket analizi, grafik ve rapor uretimi Python/pandas tarafinda yapilir.
+
+## Hızlı Demo (5 dakika)
+
+Repo'nun içindeki dummy data (`data/uploads/`) ile out-of-the-box test edilebilir — 5500 aday başvurusu, 247 İTÜ'lü örneği, 2 dönem İK anketi (Q1/Q2), 3 örnek CV.
+
+```bash
+git clone https://github.com/MehmetAliDascilar/hr-mcp-tool.git
+cd hr-mcp-tool
+cp .env.example .env
+docker compose up -d --build         # local: port 8005
+# veya Onyx ile aynı network için:
+# docker compose -f docker-compose.company.yml up -d   # port 8006, container: survey-excel-mcp-onyx
+```
+
+Sonra Onyx Admin'de:
+
+1. **Admin → MCP Servers → Add** → URL: `http://host.docker.internal:8005/mcp` (local) veya `http://survey-excel-mcp-onyx:8005/mcp` (company), Transport: STREAMABLE_HTTP
+2. **Assistants → New Assistant** → Instructions kutusuna [`ONYX_UNIFIED_PROMPT.md`](ONYX_UNIFIED_PROMPT.md) içeriğini komple yapıştır → MCP server'daki tüm 72 tool'u etkinleştir
+3. Test: [`TEST_PROMPTS_72.md`](TEST_PROMPTS_72.md)'deki sıralı 18-prompt akışını dene
 
 ## Dosya Yerlesimi
 
@@ -169,6 +188,9 @@ Uvicorn running on http://0.0.0.0:8005
 
 Onyx agent instructions alani icin hazir prompt:
 
-```text
-ONYX_SURVEY_AGENT_PROMPT.md
-```
+- [`ONYX_UNIFIED_PROMPT.md`](ONYX_UNIFIED_PROMPT.md) — **güncel ve tek persona**, 72 tool envanteri + halüsinasyon engelleri dahil. Onyx Assistant Instructions kutusuna komple yapıştırın.
+- Tool kataloğu için bkz. [`TOOL_CATALOG.md`](TOOL_CATALOG.md)
+- Tüm tool'ları el ile test etmek için [`TEST_PROMPTS_72.md`](TEST_PROMPTS_72.md)
+- 72 tool'u MCP üzerinden otomatik integration test için: `python tools/test_all_72_tools.py`
+
+Geriye dönük (deprecated, bilgi amaçlı): `ONYX_SURVEY_AGENT_PROMPT.md`, `ONYX_PERSONA_INSTRUCTIONS.md`, `ONYX_SYSTEM_PROMPT.md`.
