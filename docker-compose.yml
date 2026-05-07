@@ -1,6 +1,6 @@
 services:
   survey-excel-mcp:
-    build: .
+    image: emirhancivil/onyx-mcp-hr:latest
     container_name: survey-excel-mcp-onyx
     restart: unless-stopped
     ports:
