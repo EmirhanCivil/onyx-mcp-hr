@@ -19,10 +19,13 @@ node_modules/
 # Environment
 .env
 
-# Runtime outputs
+# Runtime outputs (clone'da boş başlasın — Dockerfile mkdir ile yaratıyor)
 data/outputs/
-data/uploads/
 data/processed/
+
+# Test artifacts (test_all_72_tools.py çalıştırılınca üretilir)
+test_72_results.json
+tool_schemas.json
 
 # Logs
 logs/
