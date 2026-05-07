@@ -1,196 +1,82 @@
 # Survey & Excel Intelligence MCP
 
-Onyx uzerinden kullanilmak uzere tasarlanmis CV, Excel/CSV ve IK anket analiz MCP server'i. **72 tool** — CV/Excel/anket analizi, kalite denetimi, otomatik filtre/sorgu, anti-join, grafik (bar/heatmap/radar/diverging), HR raporu ve serbest doküman üretimi.
+72 tool'lu Onyx MCP server: CV, Excel/CSV ve anket analizi. Büyük tablolar LLM context'ine taşınmaz; hesaplama ve görselleştirme Python/pandas tarafında yapılır, agent sonuçları yorumlar.
 
-Ana ilke: buyuk Excel/CSV dosyalari LLM context'ine tasinmaz. Hesaplama, filtreleme, karsilastirma, duplicate temizleme, anket analizi, grafik ve rapor uretimi Python/pandas tarafinda yapilir.
-
-## Hızlı Demo (5 dakika)
-
-Repo'nun içindeki dummy data (`data/uploads/`) ile out-of-the-box test edilebilir — 5500 aday başvurusu, 247 İTÜ'lü örneği, 2 dönem İK anketi (Q1/Q2), 3 örnek CV.
+## Çalıştırma
 
 ```bash
-git clone https://github.com/MehmetAliDascilar/hr-mcp-tool.git
-cd hr-mcp-tool
+git clone https://github.com/EmirhanCivil/onyx-mcp-hr.git
+cd onyx-mcp-hr
 cp .env.example .env
-docker compose up -d --build         # local: port 8005
-# veya Onyx ile aynı network için:
-# docker compose -f docker-compose.company.yml up -d   # port 8006, container: survey-excel-mcp-onyx
-```
-
-Sonra Onyx Admin'de:
-
-1. **Admin → MCP Servers → Add** → URL: `http://host.docker.internal:8005/mcp` (local) veya `http://survey-excel-mcp-onyx:8005/mcp` (company), Transport: STREAMABLE_HTTP
-2. **Assistants → New Assistant** → Instructions kutusuna [`ONYX_UNIFIED_PROMPT.md`](ONYX_UNIFIED_PROMPT.md) içeriğini komple yapıştır → MCP server'daki tüm 72 tool'u etkinleştir
-3. Test: [`TEST_PROMPTS_72.md`](TEST_PROMPTS_72.md)'deki sıralı 18-prompt akışını dene
-
-## Dosya Yerlesimi
-
-Dosyalari bu klasorlere koyun:
-
-- `data/uploads/cv`: CV dosyalari (`.pdf`, `.txt`, `.docx`, `.csv`, `.xlsx`, `.xls`)
-- `data/uploads/excel`: Genel Excel/CSV/ODS dosyalari
-- `data/uploads/survey`: Anket Excel/CSV/ODS dosyalari
-
-Desteklenen tablo formatlari: `.xlsx`, `.xls`, `.xlsm`, `.xlsb`, `.ods`, `.csv`.
-
-MCP acilista bu klasorleri ve alt klasorleri otomatik tarar. Calisirken yeni dosya eklenirse Onyx'te `refresh_file_library` demek yeterlidir.
-
-## Onyx MCP URL
-
-Onyx ile ayni Docker network icinde:
-
-```text
-http://survey-excel-mcp-onyx:8005/mcp
-```
-
-Host makineden test:
-
-```text
-http://localhost:8006/mcp
-```
-
-Sabit container IP kullanmayin; container yeniden olusturulunca IP degisebilir.
-
-## Premium Kontrol Tool'lari
-
-- `get_system_status`: Klasorleri, yuklenen dosya sayilarini, endpointleri ve eksik aksiyonlari tek cevapta ozetler.
-- `refresh_file_library`: CV, Excel ve anket klasorlerini yeniden tarar.
-- `list_file_library`: Tum dosya kutuphanesini kategorilere gore listeler.
-- `hr_health_check_prompt`: Onyx'te standart baslangic kontrol akisi.
-
-Onyx'te ilk mesaj olarak sunu yazmak iyi calisir:
-
-```text
-get_system_status calistir, sonra dosya kutuphanesini ozetle.
-```
-
-## Temel Tool'lar
-
-- `create_candidate_shortlist`: CV havuzundan role/yetkinlige gore aday kisa listesi uretir; otomatik karar vermez.
-- `analyze_candidate_pool`: Aday Excel'inden toplam aday, durum dagilimi, kirilimlar, eksik veri ve duplicate ozetini cikarir.
-- `match_excel_candidates_to_cvs`: Excel aday kayitlarini CV dosyalariyla eslestirir; eslesmeyenleri raporlar ve export eder.
-- `auto_select_hr_file`: Dosya adi vermeden uygun CV/aday Excel/anket dosyasini secer; alternatifleri dondurur.
-- `normalize_hr_columns`: TR/EN kolonlari HR canonical alanlara eslestirir (email, telefon, durum, pozisyon vb.).
-- `calculate_hr_data_quality_score`: Aday Excel'i icin 0-100 veri kalite skoru (eksik/duplicate/format/CV eslesme).
-- `generate_hr_overview_dashboard`: Tek komutla aday havuzu dashboard ozeti.
-- `analyze_candidate_stage_transitions`: Iki donem Excel arasinda aday surec gecislerini analiz eder ve export eder.
-- `analyze_position_funnel`: Pozisyon bazli funnel analizi.
-- `compare_candidate_segments`: Segment KPI karsilastirma (okul/sehir/pozisyon vb).
-- `analyze_survey_root_causes`: Anket dusuk skor boyutlari icin tema+grup birlikte kok neden analizi.
-- `suggest_hr_questions`: Yuklenen dosyalara gore ornek soru onerileri.
-- `analyze_recruiting_pipeline`: Aday Excel'inden funnel, kaynak karmasi, darbogaz ve veri kalitesi ozeti cikarir.
-- `create_survey_action_plan`: Anket sonuclarindan HRBP aksiyon plani, sahiplik ve takip metrikleri uretir.
-- `find_spreadsheet`: Dosya adi, kolon veya kategoriye gore Excel/anket bulur.
-- `inspect_workbook_sheets`: Coklu sheet workbook'larda sheet envanteri cikarir ve en dolu sheet'i onerir.
-- `analyze_workbook_structure`: Coklu sheet workbook'larda tum sheet'leri profiller; veri sheet'lerini ayirir ve strateji onerir.
-- `audit_spreadsheet_quality`: Her tip Excel/CSV/ODS icin eksik veri, duplicate, format/kalite problemleri ve onerilen tool taramasi yapar.
-- `auto_compare_spreadsheets`: Iki dosyayi file_id veya birebir ayni kolon adi bilmeden otomatik kolon eslestirme ile karsilastirir.
-- `auto_filter_excel_rows`: File id istemeden uygun Excel'i bulur ve dogal sorguyla satir filtreler.
-- `auto_query_spreadsheet_rows`: File id istemeden full-scan sorgu yapar; kesin matched_count + preview/export.
-- `filter_spreadsheet_rows`: Kolon/deger veya dogal sorguya gore satirlari filtreler.
-- `summarize_spreadsheet_column`: Bir kolondaki deger dagilimini ozetler.
-- `compare_spreadsheet_columns`: Iki Excel'in sutun farklarini bulur.
-- `compare_spreadsheet_rows`: Iki Excel arasinda farkli satirlari bulur.
-- `compare_spreadsheet_by_key`: Anahtar kolona gore degisen kayitlari bulur.
-- `find_duplicate_rows`: Duplicate kayitlari bulur.
-- `deduplicate_spreadsheet`: Duplicate kayitlari temizler ve gerekirse export uretir.
-- `scan_cvs`, `list_cvs`, `search_cvs`, `analyze_cvs`: CV klasorunu tarar, listeler ve metin arar.
-- `auto_analyze_survey`: File id istemeden anket overview, grup analizi ve yorum ozetini uretir.
-- `analyze_survey_overview`, `analyze_survey_by_group`, `analyze_survey_comments`: Anket analizleri.
-- `compare_survey_periods`: Iki anket donemini karsilastirir.
-- `create_group_bar_chart`, `create_score_heatmap`, `create_survey_report`: Grafik ve rapor uretir.
-- `create_candidate_pool_report`, `create_shortlist_report`, `create_data_quality_report`, `create_department_risk_report`: HTML/Markdown/DOCX raporlari uretir.
-
-## HR Workflow Ornekleri
-
-Aday shortlist:
-
-```text
-Python Data Analyst rolu icin create_candidate_shortlist calistir.
-required_skills: Python, SQL, Excel
-preferred_skills: Power BI, pandas, stakeholder management
-```
-
-Aday pipeline:
-
-```text
-analyze_recruiting_pipeline calistir, kaynak kanali ve aday durumu darbogazlarini ozetle.
-```
-
-Genel dosya kalite kontrolu:
-
-```text
-Yeni yukledigim dosyayi audit_spreadsheet_quality ile tara; dosya tipi, eksik veri, duplicate ve onerilen analizleri soyle.
-```
-
-Genel karsilastirma:
-
-```text
-Iki son Excel'i auto_compare_spreadsheets ile karsilastir; kolon adlari farkliysa otomatik eslestir.
-```
-
-Anket aksiyon plani:
-
-```text
-create_survey_action_plan calistir; 0-30 gun ve 30-60 gun aksiyonlarini yonetici ozeti olarak yaz.
-```
-
-Karar destegi notu: CV shortlist skoru nihai ise alim karari degildir. Yas, cinsiyet, askerlik, kimlik gibi korunmus veya hassas nitelikler karar kriteri yapilmamalidir.
-
-## Local Calistirma
-
-```powershell
-.\venv\Scripts\python.exe server.py
-```
-
-Docker ile local build:
-
-```powershell
 docker compose up -d --build
 ```
 
-## Sirket PC Kurulumu
+İki container ayağa kalkar:
 
-Image Docker Hub'da:
+| Container | Port | İş |
+|---|---|---|
+| `survey-excel-mcp-onyx` | 8005 | MCP server (FastAPI + mcp Python SDK) |
+| `survey-excel-mcp-files` | 8007 | nginx file-serving — Onyx'in chart/rapor link'leri için |
 
-```text
-memobaba44/survey-excel-mcp:latest
+Lokal Python (Docker olmadan):
+
+```bash
+python -m venv venv && source venv/bin/activate   # Windows: .\venv\Scripts\activate
+pip install -r requirements.txt
+python server.py
 ```
 
-Onyx zaten `onyx_default` network'u ile calisiyorsa:
+## Onyx'e bağlama
 
-```powershell
-docker pull memobaba44/survey-excel-mcp:latest
-docker compose -f docker-compose.company.yml up -d
-```
+1. **Admin → MCP Servers → Add**
+   - URL: `http://host.docker.internal:8005/mcp`
+   - Transport: **STREAMABLE_HTTP**
+2. **Assistants → New Assistant**
+   - Instructions kutusuna [`ONYX_UNIFIED_PROMPT.md`](ONYX_UNIFIED_PROMPT.md) içeriğini komple yapıştır
+   - 72 tool'u etkinleştir
+3. Test: [`TEST_PROMPTS_72.md`](TEST_PROMPTS_72.md)
 
-Sonra Onyx MCP URL:
+## Dosya yerleşimi
 
-```text
-http://survey-excel-mcp-onyx:8005/mcp
-```
+Kullanıcı dosyaları:
 
-Hosttan kontrol:
+- `data/uploads/cv` — `.pdf`, `.docx`, `.txt`
+- `data/uploads/excel` — `.xlsx`, `.xls`, `.xlsm`, `.xlsb`, `.ods`, `.csv`
+- `data/uploads/survey` — aynı tablo formatları
 
-```powershell
-docker logs --tail 80 survey-excel-mcp-onyx
-```
+Container açılışında otomatik taranır. Çalışırken yeni dosya eklenince Onyx'te `refresh_file_library` çağır.
 
-Beklenen satirlar:
+Üretilen çıktılar:
 
-```text
-Auto-scan uploads: ... dosya yuklendi.
-Auto-scan CVs: ... dosya yuklendi.
-Uvicorn running on http://0.0.0.0:8005
-```
+- `data/outputs/charts` — PNG grafikler
+- `data/outputs/reports` — HTML / Markdown / DOCX raporlar
+- `data/outputs/exports` — XLSX export'lar
 
-## Onyx Instructions
+Hepsi nginx üzerinden `http://localhost:8007/...` URL'leriyle servis edilir.
 
-Onyx agent instructions alani icin hazir prompt:
+## Repo'da gelen dummy data
 
-- [`ONYX_UNIFIED_PROMPT.md`](ONYX_UNIFIED_PROMPT.md) — **güncel ve tek persona**, 72 tool envanteri + halüsinasyon engelleri dahil. Onyx Assistant Instructions kutusuna komple yapıştırın.
-- Tool kataloğu için bkz. [`TOOL_CATALOG.md`](TOOL_CATALOG.md)
-- Tüm tool'ları el ile test etmek için [`TEST_PROMPTS_72.md`](TEST_PROMPTS_72.md)
-- 72 tool'u MCP üzerinden otomatik integration test için: `python tools/test_all_72_tools.py`
+`data/uploads/` altında out-of-the-box test verisi var:
 
-Geriye dönük (deprecated, bilgi amaçlı): `ONYX_SURVEY_AGENT_PROMPT.md`, `ONYX_PERSONA_INSTRUCTIONS.md`, `ONYX_SYSTEM_PROMPT.md`.
+| Dosya | Yer | İçerik |
+|---|---|---|
+| `dummy_basvuru_listesi.xlsx` | `excel/` | 5500 satır, 22 kolon (ID, Ad Soyad, Email, Cinsiyet, Fakülte, Üniversite, Doğum Tarihi, Adres, Onay Durum, …) |
+| `dummy_anket_iletilenler.xlsx` | `excel/` | Ana havuzun anket iletilen alt kümesi |
+| `dummy_ik_anket_2026_q1.xlsx` | `survey/` | 1200 yanıt, 7 skor boyutu (Memnuniyet, Yönetici Desteği, İletişim, İş Yükü Dengesi, Kariyer Gelişimi, Takdir, Araç ve Süreçler) |
+| `dummy_ik_anket_2026_q2.xlsx` | `survey/` | Aynı yapı, Q2 dönemi |
+| 3 PDF CV | `cv/` | Akademik / modern / örnek |
+
+Kendi datanla denemek istiyorsan: `data/uploads/` altındaki dosyaları silip kendi dosyalarını koy, container'ı restart et veya `refresh_file_library` çağır.
+
+## Dosya rehberi
+
+| Dosya | İçerik |
+|---|---|
+| [`ONYX_UNIFIED_PROMPT.md`](ONYX_UNIFIED_PROMPT.md) | Onyx Assistant Instructions — komple yapıştırılır. 72 tool envanteri + halüsinasyon kuralları dahil. |
+| [`TOOL_CATALOG.md`](TOOL_CATALOG.md) | 72 tool listesi, kategorize. |
+| [`TEST_PROMPTS_72.md`](TEST_PROMPTS_72.md) | Her tool için bir prompt + sıralı 18-prompt test akışı + halüsinasyon kontrol senaryoları. |
+| `tools/test_all_72_tools.py` | MCP üzerinden otomatik integration test — `python tools/test_all_72_tools.py`. |
+
+## Lisans
+
+MIT
