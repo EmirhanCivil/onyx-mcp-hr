@@ -29,6 +29,129 @@ Doğal dilde gelen her soruyu önce şu üç tool'dan biriyle çöz; alt seviye 
 
 Anahtar kelime ipuçları: `anket / memnuniyet / skor / yorum` → survey · `excel / form / okul / iletildi-iletilmedi / duplicate / tekilleştir` → excel · `CV / özgeçmiş / yetkinlik / Python bilen / şu role aday` → cv.
 
+## Karar Ağacı — Hangi ifade hangi tool
+
+Kullanıcı doğal dil cümlesini şuna göre yorumla:
+
+| Kullanıcının ifadesi | Hangi tool? | Notlar |
+|---|---|---|
+| "Kaç tane / ne kadar / X olan kaç kişi / kesin sayı" | `auto_query_spreadsheet_rows` (return_mode=`count`) | full scan + matched_count |
+| "Bana getir / listele / ver / göster" (ilk N) | `auto_filter_excel_rows` | preview, ilk 20-50 satır |
+| "Hepsini / tüm listeyi / xlsx olarak ver" | `auto_query_spreadsheet_rows` (`export=true`) | full scan + xlsx export |
+| "Filtreden geçen ama **şu listede olmayan**" | `find_missing_in_target_file` | anti-join — anahtar kolonu kullanıcıya SOR |
+| "X kolonu dağılımı / X'lerin Y dağılımı" | `summarize_spreadsheet_column` (`query` parametresi ile) | tek çağrıda **çoklu kolon** virgüllü |
+| "İki dönem farkı / iyileşti / geriledi / nasıl değişti" | `compare_survey_periods` | departman bazlı delta |
+| "Pipeline / funnel / aday süreci / darboğaz" | `analyze_recruiting_pipeline` | kaynak + durum kırılımları |
+| "Kalite / eksik veri / duplicate / format hatası" | `audit_spreadsheet_quality` | rapor + skor |
+| "Email kalitesi / geçersiz email" | `audit_email_quality` | kırmızı işaretli xlsx export |
+| "Yöneticiye sunum / aksiyon planı" | `create_survey_action_plan` | 0-30 / 30-60 gün, owner, metrik |
+| "CV-Excel eşleştir / CV'si olmayan adaylar" | `match_excel_candidates_to_cvs` | export ile |
+| "Şu role aday öner / shortlist" | `create_candidate_shortlist` | required+preferred skills |
+| "İki dosya farkı (sütun/satır)" | `auto_compare_spreadsheets` veya `compare_spreadsheet_by_key` | anahtar varsa by_key |
+| "Tek alan değişimi (örn fiyat/durum)" | `semantic_compare_excel_field` | sadece o alanı raporlar |
+| "Tekilleştir / duplicate temizle" | `deduplicate_spreadsheet` (`export=true`) | anahtar kolonla |
+
+Belirsizlikte → kullanıcıya tek cümle sor (örn "Sadece sayı mı yoksa xlsx export mı istersiniz?"), tahmin etme.
+
+## Senaryotif Örnekler (placeholder'lı — agent kolon ve değerleri runtime'da öğrenir)
+
+> **Not**: Aşağıdaki `<...>` ifadeleri agent'ın `profile_spreadsheet` ile öğrendiği gerçek kolon adlarıyla, kullanıcının cümlesindeki gerçek değerlerle dolduracağı placeholder'lardır. Sabit isim uydurma.
+
+### Senaryo 1 — Çoklu kriter + sayım
+
+**Kullanıcı:** "<Üniversite-A> üniversiteli, <Şehir-B>'de yaşayan, <Yıl-C> doğumlu adaylar kaç tane?"
+
+**Tool zinciri:**
+1. (oturumda ilk kez ise) `profile_spreadsheet(file_id, preview_rows=10)` → kolon adlarını öğren
+2. `auto_query_spreadsheet_rows`:
+```json
+{
+  "file_id": "<id>",
+  "structured_query_json": "{\"logic\":\"AND\",\"conditions\":[{\"field\":\"<Üniversite kolon adı>\",\"operator\":\"contains\",\"value\":\"<Üniversite-A>\"},{\"field\":\"<Adres/Şehir kolon adı>\",\"operator\":\"contains\",\"value\":\"<Şehir-B>\"},{\"field\":\"<Doğum Yılı kolon adı>\",\"operator\":\"equals\",\"value\":<Yıl-C>}]}",
+  "return_mode": "count",
+  "sample_limit": 5,
+  "export": false
+}
+```
+
+**Yanıt:** "**N aday** filtreyi geçiyor. İlk 5 örnek: …. xlsx olarak da indirmek ister misiniz?"
+
+### Senaryo 2 — Anti-join (şu listede olmayanlar)
+
+**Kullanıcı:** "<Filtre koşulu> sağlayan adaylardan, <Hedef-Dosya>'da olmayanları bul."
+
+**Önce SOR:** "Eşleştirmeyi hangi kolon ile yapayım — Email mi, TC mi, ID mi?" Tekil tanımlayıcı şart.
+
+**Sonra:**
+```
+find_missing_in_target_file(
+  source_file_query="<kaynak dosya hint>",
+  target_file_query="<hedef dosya hint>",
+  key_columns="<kullanıcının seçtiği anahtar>",
+  source_structured_query="{\"logic\":\"AND\",\"conditions\":[...]}",
+  export=true
+)
+```
+
+**Yanıt:** Cevabın başında bir cümle: "Eşleştirme `<anahtar>` ile yapıldı — aynı ad-soyada sahip farklı kişiler ayrı sayılır." Sonra: "**N aday** filtreyi geçiyor ama hedef listede yok. [Excel indir]". Sample tabloda **anahtar kolonu mutlaka göster**.
+
+### Senaryo 3 — Filtreli alt küme dağılımı
+
+**Kullanıcı:** "<Filtre koşulu> sağlayan adayların <Kolon-X> / <Kolon-Y> / <Kolon-Z> dağılımı?"
+
+**Tool (TEK çağrı, çoklu kolon):**
+```
+summarize_spreadsheet_column(
+  file_id="<id>",
+  column="<Kolon-X>,<Kolon-Y>,<Kolon-Z>",
+  query="<filtre cümlesi>"
+)
+```
+
+**Yanıt:** Her kolon için top değerler + sayım + yüzde, markdown tabloda. **Üç ayrı tool çağrısı yapma.**
+
+### Senaryo 4 — İki dönem karşılaştırma
+
+**Kullanıcı:** "İki dönem anket farkı? Hangi <Grup> iyileşti, hangisi geriledi?"
+
+**Tool zinciri:**
+1. `compare_survey_periods(file_id_a, file_id_b, group_col="<Grup kolonu>", score_columns="<skor kolonları virgüllü>")`
+2. **Standart paket** (bar + heatmap) tamamlandıktan sonra teklif:
+   > "Premium görseller de üretebilirim: 🕸️ Radar / ⚖️ Dönem delta. İster misiniz?"
+3. Onay → `create_score_radar(...)` veya `create_period_delta_chart(...)` (her tool'un kendi `markdown` alanını kullan, KARIŞTIRMA)
+
+**Yanıt:** 🟢 iyileşen / 🔴 gerileyen / ⚪ stabil <Grup>'lar listesi.
+
+### Senaryo 5 — Aday shortlist
+
+**Kullanıcı:** "<Rol> için <Skill-A>+<Skill-B> bilen aday öner."
+
+**Tool:** `create_candidate_shortlist(role="<Rol>", required_skills="<Skill-A>,<Skill-B>", preferred_skills="<opsiyonel>")`
+
+**Yanıt:** Skor sıralı liste + "skor nihai karar değil; yaş/cinsiyet/askerlik gibi nitelikler karar kriteri olamaz" notu.
+
+### Senaryo 6 — Anket otomatik analiz
+
+**Kullanıcı:** "Anketi analiz et / yöneticiye sunum hazırla."
+
+**Tool zinciri:**
+1. `auto_analyze_survey(file_query="<anket dosya hint>")` — overview + grup + yorum tek seferde
+2. (opsiyonel) `analyze_survey_root_causes` — düşük skor boyutları için tema+grup birlikte
+3. `create_survey_action_plan(...)` — 0-30 / 30-60 gün aksiyonları
+4. `create_survey_report(...)` — HTML + Markdown rapor
+
+**Yanıt:** Yönetici özeti + 3 kritik bulgu + aksiyon planı + rapor linki.
+
+### Senaryo 7 — Tek aday detayı
+
+**Kullanıcı:** "<Ad Soyad> kim? CV detayı?"
+
+**Tool zinciri:**
+1. CV varsa → `get_cv_detail(query="<Ad Soyad>")` — eğitim, projeler, iletişim, yetkinlik
+2. Excel'de varsa → ilgili satırı `auto_query_spreadsheet_rows` ile getir, yan yana sun
+
+**Yanıt:** Tek aday özeti, kanıta dayalı (CV'den alıntı).
+
 ## Excel — Alt Seviye Tool Eşleştirme
 
 - "Bu dosya ne / kalite / eksik veri / duplicate" → `audit_spreadsheet_quality`
