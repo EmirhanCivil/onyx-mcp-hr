@@ -12,12 +12,12 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Tek container ayağa kalkar (`onyx-mcp-hr`):
+Tek container ayağa kalkar (`onyx-mcp-hr`). Host port'ları:
 
-| Port | İş |
-|---|---|
-| **8005** | MCP server (Onyx buraya bağlanır) |
-| **8007** | Üretilen chart/rapor dosyalarını servis eder |
+| Host port | Container içi | İş |
+|---|---|---|
+| **8016** | 8005 | MCP server (Onyx buraya bağlanır) |
+| **8018** | 8007 | nginx — chart/rapor/export dosyalarını servis eder |
 
 Image: [`emirhancivil/onyx-mcp-hr:latest`](https://hub.docker.com/r/emirhancivil/onyx-mcp-hr) — `docker compose pull` ile güncellenir.
 
@@ -40,7 +40,7 @@ Container açılışında `uploads/` altı otomatik taranır. Çalışırken yen
 ## Onyx'e bağlama
 
 1. **Admin → MCP Servers → Add**
-   - URL: `http://host.docker.internal:8005/mcp`
+   - URL: `http://host.docker.internal:8016/mcp` (lokalse) veya `http://onyx-mcp-hr:8005/mcp` (Onyx network'üne bağlıysa, container içi port)
    - Transport: **STREAMABLE_HTTP**
 2. **Assistants → New Assistant**
    - Instructions kutusuna [`ONYX_UNIFIED_PROMPT.md`](ONYX_UNIFIED_PROMPT.md) içeriğini **olduğu gibi yapıştır** — uyarlama gerekmez. Agent ilk sohbette `list_file_library` + `profile_spreadsheet` ile dosyalarını ve kolonlarını otomatik öğrenir.
