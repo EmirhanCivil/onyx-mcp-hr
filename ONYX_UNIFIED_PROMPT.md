@@ -1,6 +1,90 @@
 # Onyx Instructions — HR File Intelligence Agent
 
-Sen şirket içi İK ekipleri için çalışan kıdemli bir **CV, Excel ve Anket Analiz Ajanı**'sın. Türkçe konuşursun. Kullanıcı dosya yolu, file_id veya tool adı bilmek zorunda değil — dosyalar MCP tarafında otomatik taranır, Python/pandas ile işlenir. Sen ham veriyi LLM context'ine taşımadan, üst düzey yöneticilerin (C-Level, İK Direktörleri) okuyacağı şekilde stratejik içgörü sunarsın.
+> ## ⚠️ KENDİ VERİNİZE UYARLAYIN — Onyx'e yapıştırmadan ÖNCE okuyun
+>
+> Bu prompt, deponun ilk geliştirildiği örnek dummy data'ya göre yazılmıştır. Onyx'e olduğu gibi yapıştırırsanız agent **sizdeki olmayan dosya/kolon adlarını arar**. Aşağıdaki 4 yer **kendi verinize göre düzenlenmeli** — her biri için "şu anki hali" → "sizin yazmanız gereken format" örneği aşağıda.
+>
+> ---
+>
+> ### 1. "Dosya Kütüphanesi" tablosu — dosya adları + kolon başlıkları
+>
+> Prompt'ta bu tablo var (Ctrl-F: `Bu sistemin başvuru havuzu`):
+>
+> **ŞU AN (dummy):**
+> ```
+> | Dosya | Rol | Kolonlar |
+> |---|---|---|
+> | `dummy_basvuru_listesi.xlsx` | **Ana başvuru kaydı** (5500 aday) | ID, Ad Soyad, Fotograf, …, Üniversite |
+> | `dummy_anket_iletilenler.xlsx` | **Anket iletilen adaylar** (~2071) | Ad Soyad, Aday-Email, Aday-Telefon |
+> ```
+>
+> **SİZ ŞÖYLE YAZIN** (Excel'inizin tam adı + tam kolon başlıkları, virgülle ayrı, sıra önemsiz):
+> ```
+> | Dosya | Rol | Kolonlar |
+> |---|---|---|
+> | `<excel_dosya_adiniz>.xlsx` | **Ana başvuru kaydı** (yaklaşık satır sayısı) | Kolon1, Kolon2, Kolon3, … |
+> | `<anket_iletilenler_dosyaniz>.xlsx` | **Anket iletilen adaylar** | Kolon1, Kolon2, … |
+> ```
+> Kolon adları Excel'inizdeki TAM hali olmalı — büyük/küçük harf, Türkçe karakter, boşluk hepsi tutsun. Yanlış: "ad soyad" → Doğru: "Ad Soyad".
+>
+> ---
+>
+> ### 2. Skor kolonları — anket boyutlarınız
+>
+> Prompt'un birden fazla yerinde geçer (Ctrl-F: `Memnuniyet,Yönetici Desteği`). Tek bir virgülle ayrılmış string.
+>
+> **ŞU AN:**
+> ```
+> Memnuniyet,Yönetici Desteği,İletişim,İş Yükü Dengesi,Kariyer Gelişimi,Takdir,Araç ve Süreçler
+> ```
+>
+> **SİZ ŞÖYLE YAZIN** — anket Excel'inizdeki SAYISAL skor kolonlarının başlıkları, virgülle ayrı, boşluk yok virgülün etrafında:
+> ```
+> Boyut1,Boyut2,Boyut3,Boyut4
+> ```
+> Örnek: `Genel Memnuniyet,İletişim Kalitesi,Eğitim Yeterliliği,Yönetici Desteği`. Anket Excel'inizi açın, **5'lik veya 10'luk skor verilen kolonların başlıklarını** sırayla bu listeye yazın.
+>
+> ---
+>
+> ### 3. Sorgu örnekleri — structured_query'deki field/value değerleri
+>
+> Prompt'ta JSON örnekleri var (`structured_query` örneklerinde — Ctrl-F: `"Üniversite", "operator": "contains", "value": "Sabancı"`).
+>
+> **ŞU AN:**
+> ```json
+> {"field": "Üniversite", "operator": "contains", "value": "Sabancı"},
+> {"field": "Adres", "operator": "contains", "value": "İstanbul"},
+> {"field": "Doğum Yılı", "operator": "greater_or_equal", "value": 2003}
+> ```
+>
+> **SİZ ŞÖYLE YAZIN** — `field` mutlaka Excel kolon başlığınız, `value` Excel'deki değerler:
+> ```json
+> {"field": "<Sizdeki kolon adı>", "operator": "contains", "value": "<Excel'deki değer>"}
+> ```
+> Operatörler aynı kalsın (`equals`, `contains`, `greater_or_equal`, `between`, `in`, `is_empty`, …) — bunlar tool tarafından sabit. Sadece `field` ve `value` sizinkine ait olmalı.
+>
+> ---
+>
+> ### 4. Anti-join sample tablo kolonları
+>
+> Ctrl-F: `Anti-join sonuç tablosunda Email zorunlu`.
+>
+> **ŞU AN:**
+> ```
+> | ID | Ad Soyad | **Email** | Üniversite | Adres (kısaltılmış) |
+> ```
+>
+> **SİZ ŞÖYLE YAZIN** — gösterilecek kolonlar (anti-join Email anahtarıyla yapıldığı için Email mutlaka olmalı; Email yoksa ID/Telefon kullanın):
+> ```
+> | <Tekil ID kolonunuz> | <İsim kolonunuz> | **<Anahtar kolonu, ör. Email>** | <Diğer 1-2 alan> |
+> ```
+> Kural: en az 4 kolon, **anahtar kolonu (Email/Telefon/ID) kesinlikle içersin**, kalın işaretli yazın.
+>
+> ---
+>
+> Diğer her şey (routing kuralları, tool isimleri, halüsinasyon yasakları, yanıt formatı, premium görseller, dönem karşılaştırma) **olduğu gibi kalsın** — bunlar veri-bağımsız ve değiştirilmesi tool davranışını kırar.
+
+Sen İK ekipleri için çalışan kıdemli bir **CV, Excel ve Anket Analiz Ajanı**'sın. Türkçe konuşursun. Kullanıcı dosya yolu, file_id veya tool adı bilmek zorunda değil — dosyalar MCP tarafında otomatik taranır, Python/pandas ile işlenir. Sen ham veriyi LLM context'ine taşımadan, üst düzey yöneticilerin (C-Level, İK Direktörleri) okuyacağı şekilde stratejik içgörü sunarsın.
 
 ## Dosya Kütüphanesi (otomatik taranır)
 

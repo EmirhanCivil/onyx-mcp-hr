@@ -1,6 +1,6 @@
 # Onyx HR MCP
 
-72 tool'lu Onyx MCP server: CV, Excel/CSV ve anket analizi. Image Docker Hub'da hazır — clone et, `docker compose up` de, Onyx'e bağla.
+72 tool'lu Onyx MCP server: CV, Excel/CSV ve anket analizi. Tek Docker image — clone et, kendi data klasörünü bağla, Onyx'e bind et.
 
 ## Kurulum
 
@@ -8,17 +8,34 @@
 git clone https://github.com/EmirhanCivil/onyx-mcp-hr.git
 cd onyx-mcp-hr
 cp .env.example .env
+# .env içinde HR_DATA_DIR satırını kendi CV/Excel/anket klasörünün yoluna ayarla
 docker compose up -d
 ```
 
-İki container ayağa kalkar:
+Tek container ayağa kalkar (`onyx-mcp-hr`):
 
-| Container | Port | İş |
-|---|---|---|
-| `survey-excel-mcp-onyx` | 8005 | MCP server |
-| `survey-excel-mcp-files` | 8007 | Üretilen chart/rapor dosyalarını servis eder |
+| Port | İş |
+|---|---|
+| **8005** | MCP server (Onyx buraya bağlanır) |
+| **8007** | Üretilen chart/rapor dosyalarını servis eder |
 
 Image: [`emirhancivil/onyx-mcp-hr:latest`](https://hub.docker.com/r/emirhancivil/onyx-mcp-hr) — `docker compose pull` ile güncellenir.
+
+## Data klasörü yapısı
+
+`HR_DATA_DIR` olarak verdiğin klasör şu yapıda olmalı:
+
+```
+<senin-data-klasörün>/
+├── uploads/
+│   ├── cv/        ← CV dosyaları (.pdf, .docx, .txt)
+│   ├── excel/     ← Aday Excel'leri (.xlsx, .csv, .ods, …)
+│   └── survey/    ← Anket Excel'leri
+├── outputs/       ← Otomatik oluşur (chart, rapor, export)
+└── processed/     ← Otomatik oluşur
+```
+
+Container açılışında `uploads/` altı otomatik taranır. Çalışırken yeni dosya eklenince Onyx'te `refresh_file_library` çağır.
 
 ## Onyx'e bağlama
 
@@ -26,19 +43,10 @@ Image: [`emirhancivil/onyx-mcp-hr:latest`](https://hub.docker.com/r/emirhancivil
    - URL: `http://host.docker.internal:8005/mcp`
    - Transport: **STREAMABLE_HTTP**
 2. **Assistants → New Assistant**
-   - Instructions kutusuna [`ONYX_UNIFIED_PROMPT.md`](ONYX_UNIFIED_PROMPT.md) içeriğini komple yapıştır
-   - 72 tool'u etkinleştir
+   - Instructions kutusuna [`ONYX_UNIFIED_PROMPT.md`](ONYX_UNIFIED_PROMPT.md) içeriğini yapıştır.
+   - **ÖNEMLİ:** prompt en üstündeki "⚠️ KENDİ VERİNİZE UYARLAYIN" bölümüne göre 4 yeri (dosya adları, kolonlar, skor kolonları, sorgu örnekleri) kendi datana uyarlamadan kaydetme — yoksa agent yanlış dosya/kolon arar.
+   - 72 tool'u etkinleştir.
 
-## Dummy data
+## Sürüm notu
 
-`data/uploads/` altında repo ile gelir:
-
-| Dosya | Yer | İçerik |
-|---|---|---|
-| `dummy_basvuru_listesi.xlsx` | `excel/` | 5500 satır, 22 kolon (ID, Ad Soyad, Email, Cinsiyet, Fakülte, Üniversite, Doğum Tarihi, Adres, Onay Durum, …) |
-| `dummy_anket_iletilenler.xlsx` | `excel/` | Ana havuzun anket iletilen alt kümesi |
-| `dummy_ik_anket_2026_q1.xlsx` | `survey/` | 1200 yanıt, 7 skor boyutu (Memnuniyet, Yönetici Desteği, İletişim, İş Yükü Dengesi, Kariyer Gelişimi, Takdir, Araç ve Süreçler) |
-| `dummy_ik_anket_2026_q2.xlsx` | `survey/` | Aynı yapı, Q2 dönemi |
-| 3 PDF CV | `cv/` | Akademik / modern / örnek |
-
-Kendi datanla denemek için: `data/uploads/{cv,excel,survey}/` altına kopyala, Onyx'te `refresh_file_library` çağır.
+`0.2.0` — tek container (nginx + uvicorn supervisord ile), önceki iki-container yapı `0.1.0`'da.
