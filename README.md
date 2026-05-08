@@ -43,8 +43,7 @@ Container açılışında `uploads/` altı otomatik taranır. Çalışırken yen
    - URL: `http://host.docker.internal:8005/mcp`
    - Transport: **STREAMABLE_HTTP**
 2. **Assistants → New Assistant**
-   - Instructions kutusuna [`ONYX_UNIFIED_PROMPT.md`](ONYX_UNIFIED_PROMPT.md) içeriğini yapıştır.
-   - **ÖNEMLİ:** prompt en üstündeki "⚠️ KENDİ VERİNİZE UYARLAYIN" bölümüne göre 4 yeri (dosya adları, kolonlar, skor kolonları, sorgu örnekleri) kendi datana uyarlamadan kaydetme — yoksa agent yanlış dosya/kolon arar.
+   - Instructions kutusuna [`ONYX_UNIFIED_PROMPT.md`](ONYX_UNIFIED_PROMPT.md) içeriğini **olduğu gibi yapıştır** — uyarlama gerekmez. Agent ilk sohbette `list_file_library` + `profile_spreadsheet` ile dosyalarını ve kolonlarını otomatik öğrenir.
    - 72 tool'u etkinleştir.
 
 ## Sürüm notu
