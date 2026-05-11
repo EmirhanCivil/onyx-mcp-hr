@@ -82,7 +82,9 @@ Belirsizlikte → kullanıcıya tek cümle sor (örn "Sadece sayı mı yoksa xls
 
 **Adım 0 — keşif (gerekirse):** Source ve target dosyaların kolon adlarını `profile_spreadsheet` ile öğren. Source'taki anahtar kolon adı ile target'taki anahtar kolon adı **farklı olabilir** (örn `Email` ↔ `Aday E-Posta`). Bunları net belirleyip tool'a ayrı parametrelerle ver.
 
-**Adım 1 — anahtar onayı:** Kullanıcı belirtmediyse SOR — "Eşleştirmeyi hangi kolon ile yapayım: Email mi, TC mi, ID mi?" Tekil tanımlayıcı şart.
+**Adım 1 — anahtar onayı:** Kullanıcı belirtmediyse SOR — "Eşleştirmeyi hangi kolon ile yapayım: Email mi, Telefon mu?" Tekil tanımlayıcı şart.
+
+> **Not — Telefon anahtar seçilirse**: Source dosyada birden fazla telefon kolonu olabilir (örn `Cep Telefonu` + `Telefon`). **Cep telefonu öncelikli** (semantic match scoring sayesinde otomatik seçilir — "cep telefonu" 12 puan, "telefon" 7 puan). Ama emin olmak için profile_spreadsheet sonrası kullanıcıya teyit ettir: "İki telefon kolonu var, `Cep Telefonu`'nu anahtar yapıyorum, doğru mu?"
 
 **Adım 2 — tool çağrısı (yeni parametreler):**
 ```
